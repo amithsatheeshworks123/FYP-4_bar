@@ -265,44 +265,45 @@ def batch_path_reward(batch_p, target_line=None):
              np.maximum(0.0, 40.0-mu_t)**2 + np.maximum(0.0, mu_t-140.0)**2))
     trans_pen = pen_t.mean(axis=1)              # (M,)
 
-    # ── 5. Path statistics with NaN masking ──────────────────────────────────
-    mx = np.where(vstep, mid_x, np.nan)  # (M, 360)
-    my = np.where(vstep, mid_y, np.nan)
+    # Only compute path statistics for fully-valid samples (avoids all-NaN warnings)
+    ok_sub = np.where(all_ok)[0]
+    if ok_sub.size == 0:
+        return rewards
+
+    mx_ok = np.where(vstep[ok_sub], mid_x[ok_sub], np.nan)   # (K, 360)
+    my_ok = np.where(vstep[ok_sub], mid_y[ok_sub], np.nan)
 
     if target_line is not None:
-        a_arr = np.full(vp.shape[0], float(target_line[0]))
-        b_arr = np.full(vp.shape[0], float(target_line[1]))
+        a_arr = np.full(ok_sub.size, float(target_line[0]))
+        b_arr = np.full(ok_sub.size, float(target_line[1]))
     else:
-        # Vectorised OLS: y = a*x + b per sample
-        n_v  = vstep.sum(axis=1).astype(float)
-        sx   = np.nansum(np.where(vstep, mid_x,        0.0), axis=1)
-        sy   = np.nansum(np.where(vstep, mid_y,        0.0), axis=1)
-        sx2  = np.nansum(np.where(vstep, mid_x**2,     0.0), axis=1)
-        sxy  = np.nansum(np.where(vstep, mid_x*mid_y,  0.0), axis=1)
+        n_v  = vstep[ok_sub].sum(axis=1).astype(float)
+        sx   = np.nansum(np.where(vstep[ok_sub], mid_x[ok_sub],            0.0), axis=1)
+        sy   = np.nansum(np.where(vstep[ok_sub], mid_y[ok_sub],            0.0), axis=1)
+        sx2  = np.nansum(np.where(vstep[ok_sub], mid_x[ok_sub]**2,         0.0), axis=1)
+        sxy  = np.nansum(np.where(vstep[ok_sub], mid_x[ok_sub]*mid_y[ok_sub], 0.0), axis=1)
         denom = n_v * sx2 - sx**2 + 1e-12
         a_arr = (n_v * sxy - sx * sy) / denom
         b_arr = (sy - a_arr * sx) / (n_v + 1e-12)
 
-    y_fit = a_arr[:, np.newaxis] * mx + b_arr[:, np.newaxis]
-    err   = y_fit - my
-    mse   = np.nanmean(err**2,     axis=1)   # (M,)
+    y_fit = a_arr[:, np.newaxis] * mx_ok + b_arr[:, np.newaxis]
+    err   = y_fit - my_ok
+    mse   = np.nanmean(err**2,     axis=1)
     maxd  = np.nanmax(np.abs(err), axis=1)
 
-    dx        = np.nanmax(mx, axis=1) - np.nanmin(mx, axis=1)
-    dy        = np.nanmax(my, axis=1) - np.nanmin(my, axis=1)
-    aspect    = dy / (dx + EPS)
-    straight  = np.nanstd(my, axis=1) / (dx + EPS)
+    dx         = np.nanmax(mx_ok, axis=1) - np.nanmin(mx_ok, axis=1)
+    dy         = np.nanmax(my_ok, axis=1) - np.nanmin(my_ok, axis=1)
+    aspect     = dy / (dx + EPS)
+    straight   = np.nanstd(my_ok, axis=1) / (dx + EPS)
     stroke_pen = np.maximum(0.0, DX_MIN - dx)
 
     cost  = (W_STRAIGHT * straight
              + W_ASPECT  * aspect**2
              + W_STROKE  * stroke_pen**2
              + W_MAXDEV  * maxd)
-    r_vec = -cost - 0.05 * trans_pen     # (M,)
+    r_vec = -cost - 0.05 * trans_pen[ok_sub]
 
-    # Write back only fully-valid samples
-    ok_sub = np.where(all_ok)[0]
-    rewards[vi[ok_sub]] = r_vec[ok_sub]
+    rewards[vi[ok_sub]] = r_vec
     return rewards
 
 

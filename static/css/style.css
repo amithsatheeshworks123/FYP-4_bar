@@ -422,6 +422,18 @@ html, body {
   box-shadow: 0 4px 12px rgba(0,212,255,0.2);
 }
 
+.btn-ppo-train {
+  background: linear-gradient(135deg, #4a2000, #7a3800);
+  color: var(--amber);
+  border: 1px solid #7a4a00;
+}
+.btn-ppo-train:hover:not(:disabled) {
+  background: linear-gradient(135deg, #7a3800, #a85200);
+  border-color: var(--amber);
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(251,191,36,0.2);
+}
+
 .btn-reset {
   background: var(--bg);
   color: var(--txt3);

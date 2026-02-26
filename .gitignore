@@ -26,3 +26,5 @@ Thumbs.db
 
 # Logs / output CSVs
 v2_attempts_*.csv
+
+*.pt

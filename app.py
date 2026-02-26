@@ -250,6 +250,71 @@ def run_ppo():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/api/optimize/ppo_extended", methods=["POST"])
+def run_ppo_extended():
+    """
+    Run PPO with extended training for prolonged optimisation.
+    Trains for significantly more steps than the standard PPO run, allowing
+    the policy to converge to a higher-quality solution:
+      1. Run a thorough CMA-ES warm-start to find a strong initial basin
+      2. Seed the PPO policy from the CMA-ES result
+      3. Run PPO for many steps with a lower learning rate and larger batch
+         so the policy refines gradually without overshooting
+    """
+    data     = request.json or {}
+    params   = project(data.get("params", DEFAULT_PARAMS))
+    tl       = _target_line(data.get("target_c", 0.0))
+    seed_val = _parse_seed(data.get("seed"))
+    steps    = int(data.get("steps", 5000))          # 3× longer than standard
+
+    try:
+        from ppo import ppo_train
+
+        # ── Step 1: thorough CMA-ES warm-start ────────────────────────────────
+        cma_obj = make_batch_obj(tl)
+        cma_r, cma_p, _, _ = optimize(
+            cma_obj, params, BOUNDS,
+            iterations=80, population=150, restarts=3, seed=seed_val
+        )
+        warm_start = project(cma_p)
+        print(f"[PPO-Extended warm-start] CMA-ES best reward: {cma_r:.4f}")
+
+        # ── Step 2: extended PPO from warm start ───────────────────────────────
+        def scalar_obj(x):
+            return float(batch_path_reward(
+                project(x)[np.newaxis, :], target_line=tl
+            )[0])
+
+        best_r, best_p, hist, _ = ppo_train(
+            scalar_obj,
+            BOUNDS,
+            steps=steps,
+            batch_size=512,           # larger batch for smoother gradients
+            lr=1e-4,                  # lower lr for careful fine-tuning
+            seed=seed_val,
+            log_samples=False,
+            checkpoint_path=PPO_CKPT,
+            baseline=warm_start,
+            early_stop_reward=-0.1,   # only stop early if result is excellent
+            target_line=tl,
+        )
+        best_p = project(best_p)
+        _, _, _, mse, max_dev = path_reward(best_p, target_line=tl, enforce_grashof="crank_rocker")
+
+        return jsonify({
+            "best_params": best_p.tolist(),
+            "reward":      float(best_r),
+            "mse":         float(mse),
+            "max_dev":     float(max_dev),
+            "history":     [float(h) for h in hist],
+        })
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":

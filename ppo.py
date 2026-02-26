@@ -14,11 +14,8 @@ import time
 import numpy as np
 import torch
 import torch.nn as nn
+from path_kinematics import is_crank_rocker_with_L2_crank, batch_path_reward
 
-try:
-    from path_kinematics import is_crank_rocker_with_L2_crank, batch_path_reward
-except ImportError:
-    from v2.path_kinematics import is_crank_rocker_with_L2_crank, batch_path_reward
 
 
 # ── Feasibility repair ────────────────────────────────────────────────────────

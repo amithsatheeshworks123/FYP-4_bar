@@ -172,6 +172,141 @@ def _transmission_penalty(p):
     return float(pen.mean())
 
 
+def batch_path_reward(batch_p, target_line=None):
+    """Fully-vectorised batch version of path_reward.
+
+    Parameters
+    ----------
+    batch_p    : array-like, shape (N, 6)  — design vectors [L1..L4, xO2, yO2]
+    target_line: (a, b) tuple or None.  None → fit best line per sample.
+
+    Returns
+    -------
+    rewards : np.ndarray, shape (N,)   — same semantics as path_reward()[0]
+    """
+    batch_p = np.asarray(batch_p, dtype=float)
+    N = batch_p.shape[0]
+    rewards = np.full(N, -1e6, dtype=float)
+
+    L1v = batch_p[:, 0]; L2v = batch_p[:, 1]
+    L3v = batch_p[:, 2]; L4v = batch_p[:, 3]
+
+    # ── 1. Basic positivity ──────────────────────────────────────────────────
+    basic_ok = np.all(batch_p[:, :4] > 0, axis=1)
+
+    # ── 2. Grashof crank-rocker: L2 must be shortest (idx 1), overall Grashof ─
+    # Mirrors is_crank_rocker_with_L2_crank(): argmin==1 AND s+l<=others_sum.
+    # Does NOT require L1 to be longest — project() handles that externally.
+    arr4  = batch_p[:, :4]
+    s_idx = arr4.argmin(axis=1)
+    s     = arr4.min(axis=1)
+    l     = arr4.max(axis=1)
+    grashof_ok = (s_idx == 1) & (s + l <= arr4.sum(axis=1) - s - l + 1e-9)
+
+    vi = np.where(basic_ok & grashof_ok)[0]
+    if vi.size == 0:
+        return rewards
+
+    # ── 3. Vectorised kinematics  (M, 360) ───────────────────────────────────
+    vp   = batch_p[vi]                   # (M, 6)
+    L1  = vp[:, 0:1]; L2  = vp[:, 1:2]
+    L3  = vp[:, 2:3]; L4  = vp[:, 3:4]
+    xO2 = vp[:, 4:5]; yO2 = vp[:, 5:6]
+
+    th2 = THETA2[np.newaxis, :]          # (1, 360)
+    Bx  = xO2 + L2 * np.cos(th2)        # (M, 360)
+    By  = yO2 + L2 * np.sin(th2)
+    dBx = Bx - L1                        # O4x = L1, O4y = 0
+    dBy = By
+    R   = np.sqrt(dBx**2 + dBy**2)
+
+    min_r  = np.abs(L3 - L4)            # (M, 1)
+    max_r  = L3 + L4
+    vstep  = (max_r > 0) & (R >= min_r - 1e-9) & (R <= max_r + 1e-9)  # (M, 360)
+
+    # Only keep samples with ≥99 % valid steps (full crank rotation)
+    all_ok = vstep.mean(axis=1) >= 0.99  # (M,)
+    if not all_ok.any():
+        return rewards
+
+    # Rocker angle for valid steps
+    R_s    = np.where(vstep, R, 1.0)
+    cosPhi = np.clip((L4**2 + R_s**2 - L3**2) / (2.0 * L4 * R_s), -1.0, 1.0)
+    phi    = np.arccos(cosPhi)
+    th4    = np.arctan2(dBy, dBx) - phi  # (M, 360)
+
+    Cx    = L1 + L4 * np.cos(th4)        # (M, 360)
+    Cy    =      L4 * np.sin(th4)
+    mid_x = 0.5 * (Bx + Cx)
+    mid_y = 0.5 * (By + Cy)
+
+    # ── 4. Transmission angle penalty over T_SAMPLES (60 pts, matches _transmission_penalty) ─
+    th2_t  = T_SAMPLES[np.newaxis, :]           # (1, 60)
+    Bx_t   = xO2 + L2 * np.cos(th2_t)          # (M, 60)
+    By_t   = yO2 + L2 * np.sin(th2_t)
+    dBx_t  = Bx_t - L1;  dBy_t = By_t
+    R_t    = np.sqrt(dBx_t**2 + dBy_t**2)
+    vs_t   = (max_r > 0) & (R_t >= min_r - 1e-9) & (R_t <= max_r + 1e-9)
+    R_st   = np.where(vs_t, R_t, 1.0)
+    cP_t   = np.clip((L4**2 + R_st**2 - L3**2) / (2.0*L4*R_st), -1.0, 1.0)
+    ph_t   = np.arccos(cP_t)
+    th4_t  = np.arctan2(dBy_t, dBx_t) - ph_t
+    Cx_t   = L1 + L4 * np.cos(th4_t)
+    Cy_t   = L4 * np.sin(th4_t)
+    vc_xt  = Bx_t - Cx_t;  vc_yt = By_t - Cy_t
+    vr_xt  = L1   - Cx_t;  vr_yt = -Cy_t
+    nc_t   = np.sqrt(vc_xt**2 + vc_yt**2)
+    nr_t   = np.sqrt(vr_xt**2 + vr_yt**2)
+    gd_t   = vs_t & (nc_t > 1e-9) & (nr_t > 1e-9)
+    cm_t   = np.where(gd_t, (vc_xt*vr_xt + vc_yt*vr_yt)/(nc_t*nr_t+1e-12), 0.0)
+    mu_t   = np.degrees(np.arccos(np.clip(cm_t, -1.0, 1.0)))
+    pen_t  = np.where(~vs_t, 10.0,
+             np.where(~gd_t, 10.0,
+             np.maximum(0.0, 40.0-mu_t)**2 + np.maximum(0.0, mu_t-140.0)**2))
+    trans_pen = pen_t.mean(axis=1)              # (M,)
+
+    # Only compute path statistics for fully-valid samples (avoids all-NaN warnings)
+    ok_sub = np.where(all_ok)[0]
+    if ok_sub.size == 0:
+        return rewards
+
+    mx_ok = np.where(vstep[ok_sub], mid_x[ok_sub], np.nan)   # (K, 360)
+    my_ok = np.where(vstep[ok_sub], mid_y[ok_sub], np.nan)
+
+    if target_line is not None:
+        a_arr = np.full(ok_sub.size, float(target_line[0]))
+        b_arr = np.full(ok_sub.size, float(target_line[1]))
+    else:
+        n_v  = vstep[ok_sub].sum(axis=1).astype(float)
+        sx   = np.nansum(np.where(vstep[ok_sub], mid_x[ok_sub],            0.0), axis=1)
+        sy   = np.nansum(np.where(vstep[ok_sub], mid_y[ok_sub],            0.0), axis=1)
+        sx2  = np.nansum(np.where(vstep[ok_sub], mid_x[ok_sub]**2,         0.0), axis=1)
+        sxy  = np.nansum(np.where(vstep[ok_sub], mid_x[ok_sub]*mid_y[ok_sub], 0.0), axis=1)
+        denom = n_v * sx2 - sx**2 + 1e-12
+        a_arr = (n_v * sxy - sx * sy) / denom
+        b_arr = (sy - a_arr * sx) / (n_v + 1e-12)
+
+    y_fit = a_arr[:, np.newaxis] * mx_ok + b_arr[:, np.newaxis]
+    err   = y_fit - my_ok
+    mse   = np.nanmean(err**2,     axis=1)
+    maxd  = np.nanmax(np.abs(err), axis=1)
+
+    dx         = np.nanmax(mx_ok, axis=1) - np.nanmin(mx_ok, axis=1)
+    dy         = np.nanmax(my_ok, axis=1) - np.nanmin(my_ok, axis=1)
+    aspect     = dy / (dx + EPS)
+    straight   = np.nanstd(my_ok, axis=1) / (dx + EPS)
+    stroke_pen = np.maximum(0.0, DX_MIN - dx)
+
+    cost  = (W_STRAIGHT * straight
+             + W_ASPECT  * aspect**2
+             + W_STROKE  * stroke_pen**2
+             + W_MAXDEV  * maxd)
+    r_vec = -cost - 0.05 * trans_pen[ok_sub]
+
+    rewards[vi[ok_sub]] = r_vec
+    return rewards
+
+
 def path_reward(p, target_line=None, enforce_grashof=None):
     """Reward: negative path error to straight line over full rotation."""
     p = np.array(p, dtype=float)

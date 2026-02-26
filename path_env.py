@@ -4,7 +4,7 @@ Design vector p = [L1,L2,L3,L4,xO2,yO2], reward from path_kinematics.path_reward
 """
 
 import numpy as np
-from v2.path_kinematics import path_reward
+from path_kinematics import path_reward
 
 
 class PathEnv:

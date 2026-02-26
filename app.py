@@ -265,7 +265,7 @@ def run_ppo_extended():
     params   = project(data.get("params", DEFAULT_PARAMS))
     tl       = _target_line(data.get("target_c", 0.0))
     seed_val = _parse_seed(data.get("seed"))
-    steps    = int(data.get("steps", 1000))          # 3× longer than standard
+    steps    = int(data.get("steps", 5000))          # 3× longer than standard
 
     try:
         from ppo import ppo_train

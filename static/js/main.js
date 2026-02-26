@@ -90,6 +90,10 @@ function computeFullPath(p) {
 const canvas = document.getElementById("linkage-canvas");
 const ctx    = canvas.getContext("2d");
 
+// CSS pixel dimensions — set by resizeCanvas(), used for all layout math.
+// canvas.width/height are device pixels (×dpr) and must NOT be used for layout.
+let cssW = 1, cssH = 1;
+
 /** Convert world coords (m) to canvas pixels. */
 function w2c(wx, wy, origin, scale) {
   return { x: origin.x + wx * scale, y: origin.y - wy * scale };
@@ -126,63 +130,90 @@ function drawJoint(px, py, r, fill, stroke) {
   ctx.stroke();
 }
 
-/** Compute auto-scale transform to fit the mechanism in the canvas. */
+/** Compute auto-scale transform to fit the mechanism in the canvas.
+ *  Uses cssW/cssH (CSS pixel dimensions) — never device-pixel dimensions. */
 function computeTransform(p) {
   const [L1, L2, L3, L4, xO2, yO2] = p;
-  const path = state.fullPath;
 
-  let minX = Math.min(0, xO2 - L2, L1 - L4) - 0.04;
-  let maxX = Math.max(L1 + L4, xO2 + L2) + 0.04;
-  let minY = Math.min(0, yO2 - L2, -L4) - 0.04;
-  let maxY = Math.max(0, yO2 + L2,  L4) + 0.04;
+  // Collect every world-space point that must stay inside the viewport:
+  // fixed pivots + full sweep of B, C, and coupler midpoints.
+  let minX =  Infinity, maxX = -Infinity;
+  let minY =  Infinity, maxY = -Infinity;
 
-  if (path.length > 0) {
-    for (const pt of path) {
-      if (pt.x < minX) minX = pt.x - 0.02;
-      if (pt.x > maxX) maxX = pt.x + 0.02;
-      if (pt.y < minY) minY = pt.y - 0.02;
-      if (pt.y > maxY) maxY = pt.y + 0.02;
+  function expand(x, y) {
+    if (x < minX) minX = x;
+    if (x > maxX) maxX = x;
+    if (y < minY) minY = y;
+    if (y > maxY) maxY = y;
+  }
+
+  // Fixed pivots
+  expand(0,   0);    // O1
+  expand(xO2, yO2);  // O2
+  expand(L1,  0);    // O4
+
+  // Sweep B over full rotation; also compute C and midpoint where valid
+  for (let i = 0; i < N_STEPS; i++) {
+    const th2 = (i / N_STEPS) * 2 * Math.PI;
+    const Bx  = xO2 + L2 * Math.cos(th2);
+    const By  = yO2 + L2 * Math.sin(th2);
+    expand(Bx, By);
+    const res = computeStep(th2, p);
+    if (res) {
+      expand(res.C.x,   res.C.y);
+      expand(res.mid.x, res.mid.y);
     }
   }
 
-  const pad = 36;
-  const W   = canvas.width  - 2 * pad;
-  const H   = canvas.height - 2 * pad;
-  const scaleX = W / (maxX - minX);
-  const scaleY = H / (maxY - minY);
+  // Guard against degenerate case (all points collapsed)
+  if (!isFinite(minX)) { minX = -0.1; maxX = 0.3; minY = -0.2; maxY = 0.2; }
+
+  // Add 12 % padding around the tight bounding box
+  const rx = (maxX - minX) || 0.1;
+  const ry = (maxY - minY) || 0.1;
+  minX -= rx * 0.12;  maxX += rx * 0.12;
+  minY -= ry * 0.12;  maxY += ry * 0.12;
+
+  // Layout in CSS pixels (cssW/cssH are set by resizeCanvas)
+  const pad    = 20;
+  const drawW  = cssW - 2 * pad;
+  const drawH  = cssH - 2 * pad;
+  const scaleX = drawW / (maxX - minX);
+  const scaleY = drawH / (maxY - minY);
   const scale  = Math.min(scaleX, scaleY);
 
-  // Centre the mechanism
-  const cx = pad + W / 2 - ((minX + maxX) / 2) * scale;
-  const cy = pad + H / 2 + ((minY + maxY) / 2) * scale;
+  // World centre → canvas centre
+  const midWorldX = (minX + maxX) / 2;
+  const midWorldY = (minY + maxY) / 2;
+  const ox = pad + drawW / 2 - midWorldX * scale;
+  const oy = pad + drawH / 2 + midWorldY * scale;   // +y because world-y is up
 
-  return { origin: { x: cx, y: cy }, scale };
+  return { origin: { x: ox, y: oy }, scale };
 }
 
-/** Faint background grid. */
+/** Faint background grid — uses CSS pixel dimensions. */
 function drawGrid() {
-  const W = canvas.width, H = canvas.height;
   const step = 28;
   ctx.save();
   ctx.strokeStyle = "rgba(26,54,84,0.5)";
   ctx.lineWidth   = 0.5;
-  for (let x = 0; x < W; x += step) {
-    ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke();
+  for (let x = 0; x < cssW; x += step) {
+    ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, cssH); ctx.stroke();
   }
-  for (let y = 0; y < H; y += step) {
-    ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke();
+  for (let y = 0; y < cssH; y += step) {
+    ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(cssW, y); ctx.stroke();
   }
   ctx.restore();
 }
 
 /** Main render function — called every animation frame. */
 function render() {
-  const W = canvas.width, H = canvas.height;
-  ctx.clearRect(0, 0, W, H);
+  // Use CSS pixel dimensions for all layout; canvas.width/height are device pixels.
+  ctx.clearRect(0, 0, cssW, cssH);
 
   // Background
   ctx.fillStyle = "#070b14";
-  ctx.fillRect(0, 0, W, H);
+  ctx.fillRect(0, 0, cssW, cssH);
   drawGrid();
 
   const p     = state.params;
@@ -211,8 +242,8 @@ function render() {
 
   // ── Target line (dashed amber) ─────────────────────────
   {
-    const xLeft  = (0    - O.x) / S;
-    const xRight = (W    - O.x) / S;
+    const xLeft  = (0    - O.x) / S;   // left  canvas edge → world x
+    const xRight = (cssW - O.x) / S;   // right canvas edge → world x (use CSS px)
     const tl1 = t(xLeft,  state.targetC);
     const tl2 = t(xRight, state.targetC);
     ctx.save();
@@ -688,13 +719,22 @@ document.getElementById("btn-pause").addEventListener("click", () => {
 function resizeCanvas() {
   const parent = canvas.parentElement;
   const dpr    = window.devicePixelRatio || 1;
-  const w      = parent.clientWidth;
-  const h      = parent.clientHeight;
-  canvas.width  = w * dpr;
-  canvas.height = h * dpr;
+  const w      = parent.clientWidth  || 600;
+  const h      = parent.clientHeight || 400;
+
+  // Store CSS dimensions — all layout code uses these, NOT canvas.width/height.
+  cssW = w;
+  cssH = h;
+
+  // Set device-pixel backing store
+  canvas.width  = Math.round(w * dpr);
+  canvas.height = Math.round(h * dpr);
   canvas.style.width  = `${w}px`;
   canvas.style.height = `${h}px`;
-  ctx.scale(dpr, dpr);
+
+  // Reset transform then apply DPR scale once.
+  // Changing canvas.width/height resets the context, so we must re-apply.
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 }
 
 window.addEventListener("resize", () => {

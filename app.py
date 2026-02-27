@@ -189,30 +189,39 @@ def run_cem():
 def run_ppo():
     """
     Run PPO optimiser.
-    Warm-starts from CMA-ES result for much faster convergence:
-      1. Run CMA-ES (fast, ~5 s) to find a good basin
-      2. Seed the PPO policy mean from the CMA-ES solution
-      3. Run PPO for fewer steps with tighter initial std
+
+    Default: cold-start from the same starting point as CMA-ES and CEM,
+    ensuring a fair comparison between all three methods.
+
+    Optional warm-start: pass {"warm_start": true} in the request body to
+    first run CMA-ES and seed PPO from its result (clearly labelled in response).
     """
-    data     = request.json or {}
-    params   = project(data.get("params", DEFAULT_PARAMS))
-    tl       = _target_line(data.get("target_c", 0.0))
-    seed_val = _parse_seed(data.get("seed"))
-    steps    = int(data.get("steps", 300))           # reduced default
+    data            = request.json or {}
+    params          = project(data.get("params", DEFAULT_PARAMS))
+    tl              = _target_line(data.get("target_c", 0.0))
+    seed_val        = _parse_seed(data.get("seed"))
+    steps           = int(data.get("steps", 300))
+    warm_start_mode = bool(data.get("warm_start", False))
 
     try:
         from ppo import ppo_train
 
-        # ── Step 1: quick CMA-ES warm-start ───────────────────────────────────
-        cma_obj   = make_batch_obj(tl)
-        cma_r, cma_p, _, _ = optimize(
-            cma_obj, params, BOUNDS,
-            iterations=40, population=100, restarts=2, seed=seed_val
-        )
-        warm_start = project(cma_p)
-        print(f"[PPO warm-start] CMA-ES best reward: {cma_r:.4f}")
+        if warm_start_mode:
+            # Optional CMA-ES warm-start (not the default — clearly labelled)
+            cma_obj = make_batch_obj(tl)
+            cma_r, cma_p, _, _ = optimize(
+                cma_obj, params, BOUNDS,
+                iterations=40, population=100, restarts=2, seed=seed_val
+            )
+            ppo_baseline = project(cma_p)
+            mode_label   = "PPO + CMA-ES warm-start"
+            print(f"[PPO warm-start] CMA-ES best reward: {cma_r:.4f}")
+        else:
+            # Cold-start: identical starting point to CMA-ES and CEM baselines
+            ppo_baseline = params
+            mode_label   = "PPO cold-start"
+            print("[PPO cold-start] Using default params as baseline (fair comparison)")
 
-        # ── Step 2: PPO from warm start ────────────────────────────────────────
         # Scalar objective is only used for checkpoint seeding; batch_path_reward
         # is called directly inside ppo_train via target_line kwarg.
         def scalar_obj(x):
@@ -229,9 +238,9 @@ def run_ppo():
             seed=seed_val,
             log_samples=False,
             checkpoint_path=PPO_CKPT,
-            baseline=warm_start,          # seed policy mean from CMA-ES
-            early_stop_reward=-0.3,       # stop early if reward is good enough
-            target_line=tl,               # batch_path_reward inside ppo_train
+            baseline=ppo_baseline,
+            early_stop_reward=-0.3,
+            target_line=tl,
         )
         best_p = project(best_p)
         _, _, _, mse, max_dev = path_reward(best_p, target_line=tl, enforce_grashof="crank_rocker")
@@ -242,6 +251,7 @@ def run_ppo():
             "mse":         float(mse),
             "max_dev":     float(max_dev),
             "history":     [float(h) for h in hist],
+            "mode":        mode_label,
         })
 
     except Exception as e:
@@ -254,32 +264,36 @@ def run_ppo():
 def run_ppo_extended():
     """
     Run PPO with extended training for prolonged optimisation.
-    Trains for significantly more steps than the standard PPO run, allowing
-    the policy to converge to a higher-quality solution:
-      1. Run a thorough CMA-ES warm-start to find a strong initial basin
-      2. Seed the PPO policy from the CMA-ES result
-      3. Run PPO for many steps with a lower learning rate and larger batch
-         so the policy refines gradually without overshooting
+
+    Default: cold-start (same starting point as CMA-ES and CEM) for a fair
+    comparison. Pass {"warm_start": true} to optionally pre-run CMA-ES first.
     """
-    data     = request.json or {}
-    params   = project(data.get("params", DEFAULT_PARAMS))
-    tl       = _target_line(data.get("target_c", 0.0))
-    seed_val = _parse_seed(data.get("seed"))
-    steps    = int(data.get("steps", 5000))          # 3× longer than standard
+    data            = request.json or {}
+    params          = project(data.get("params", DEFAULT_PARAMS))
+    tl              = _target_line(data.get("target_c", 0.0))
+    seed_val        = _parse_seed(data.get("seed"))
+    steps           = int(data.get("steps", 5000))
+    warm_start_mode = bool(data.get("warm_start", False))
 
     try:
         from ppo import ppo_train
 
-        # ── Step 1: thorough CMA-ES warm-start ────────────────────────────────
-        cma_obj = make_batch_obj(tl)
-        cma_r, cma_p, _, _ = optimize(
-            cma_obj, params, BOUNDS,
-            iterations=80, population=150, restarts=3, seed=seed_val
-        )
-        warm_start = project(cma_p)
-        print(f"[PPO-Extended warm-start] CMA-ES best reward: {cma_r:.4f}")
+        if warm_start_mode:
+            # Optional CMA-ES warm-start (clearly labelled in response)
+            cma_obj = make_batch_obj(tl)
+            cma_r, cma_p, _, _ = optimize(
+                cma_obj, params, BOUNDS,
+                iterations=80, population=150, restarts=3, seed=seed_val
+            )
+            ppo_baseline = project(cma_p)
+            mode_label   = "PPO-Extended + CMA-ES warm-start"
+            print(f"[PPO-Extended warm-start] CMA-ES best reward: {cma_r:.4f}")
+        else:
+            # Cold-start: identical starting point to CMA-ES and CEM baselines
+            ppo_baseline = params
+            mode_label   = "PPO-Extended cold-start"
+            print("[PPO-Extended cold-start] Using default params as baseline (fair comparison)")
 
-        # ── Step 2: extended PPO from warm start ───────────────────────────────
         def scalar_obj(x):
             return float(batch_path_reward(
                 project(x)[np.newaxis, :], target_line=tl
@@ -294,7 +308,7 @@ def run_ppo_extended():
             seed=seed_val,
             log_samples=False,
             checkpoint_path=PPO_CKPT,
-            baseline=warm_start,
+            baseline=ppo_baseline,
             early_stop_reward=-0.1,   # only stop early if result is excellent
             target_line=tl,
         )
@@ -307,6 +321,7 @@ def run_ppo_extended():
             "mse":         float(mse),
             "max_dev":     float(max_dev),
             "history":     [float(h) for h in hist],
+            "mode":        mode_label,
         })
 
     except Exception as e:

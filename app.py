@@ -330,6 +330,52 @@ def run_ppo_extended():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/api/optimize/ppo_sequential", methods=["POST"])
+def run_ppo_sequential():
+    """
+    Run the sequential MDP PPO optimiser (FourBarEnv, 6-step episode).
+
+    The agent selects one design parameter per step (L1→L2→L3→L4→xO2→yO2),
+    receiving intermediate feasibility rewards at steps 1 (L2<L1?) and 3
+    (Grashof?) plus the full path_reward at step 5.
+
+    Same JSON request/response format as the other optimizer routes.
+    """
+    data     = request.json or {}
+    tl       = _target_line(data.get("target_c", 0.0))
+    seed_val = _parse_seed(data.get("seed"))
+    steps    = int(data.get("steps", 300))
+
+    try:
+        from ppo_sequential import ppo_sequential_train
+
+        best_r, best_p, hist, _ = ppo_sequential_train(
+            BOUNDS,
+            steps       = steps,
+            batch_size  = 256,
+            lr          = 3e-4,
+            seed        = seed_val,
+            target_line = tl,
+            log_samples = False,
+        )
+        best_p = project(best_p)
+        _, _, _, mse, max_dev = path_reward(best_p, target_line=tl,
+                                            enforce_grashof="crank_rocker")
+
+        return jsonify({
+            "best_params": best_p.tolist(),
+            "reward":      float(best_r),
+            "mse":         float(mse),
+            "max_dev":     float(max_dev),
+            "history":     [float(h) for h in hist],
+        })
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":

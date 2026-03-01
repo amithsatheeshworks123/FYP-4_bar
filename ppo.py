@@ -28,6 +28,25 @@ import torch.nn as nn
 from path_kinematics import is_crank_rocker_with_L2_crank, batch_path_reward
 
 
+def _ensure_torch_sympy_compat():
+    """
+    Torch 2.5+ imports `equal_valued` from SymPy, which is absent in SymPy 1.11.
+    Add a minimal fallback so optimizer construction does not fail.
+    """
+    try:
+        from sympy.core import numbers as sympy_numbers
+    except Exception:
+        return
+
+    if not hasattr(sympy_numbers, "equal_valued"):
+        def _equal_valued(a, b):
+            try:
+                return bool(a == b)
+            except Exception:
+                return False
+        sympy_numbers.equal_valued = _equal_valued
+
+
 # ── Feasibility repair ────────────────────────────────────────────────────────
 
 def repair(sample, bounds):
@@ -317,6 +336,7 @@ def ppo_train(
         checkpoint_path, bounds, device,
         init_mean=baseline, init_log_std=-0.5,  # Fix B: broader initial exploration
     )
+    _ensure_torch_sympy_compat()
     # Optimize only policy parameters — value net is kept for checkpoint compat only
     opt = torch.optim.Adam(policy.parameters(), lr=lr)
 

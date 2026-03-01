@@ -54,6 +54,25 @@ import torch.nn as nn
 from sequential_env import FourBarEnv
 
 
+def _ensure_torch_sympy_compat():
+    """
+    Torch 2.5+ imports `equal_valued` from SymPy, which is absent in SymPy 1.11.
+    Add a minimal fallback so optimizer construction does not fail.
+    """
+    try:
+        from sympy.core import numbers as sympy_numbers
+    except Exception:
+        return
+
+    if not hasattr(sympy_numbers, "equal_valued"):
+        def _equal_valued(a, b):
+            try:
+                return bool(a == b)
+            except Exception:
+                return False
+        sympy_numbers.equal_valued = _equal_valued
+
+
 # ── Networks ──────────────────────────────────────────────────────────────────
 
 class SequentialPolicy(nn.Module):
@@ -226,6 +245,8 @@ def ppo_sequential_train(
     env    = FourBarEnv(bounds, target_line=target_line)
     policy = SequentialPolicy(obs_dim=env.obs_dim, act_dim=env.act_dim).to(device)
     value  = SequentialValue(obs_dim=env.obs_dim).to(device)
+
+    _ensure_torch_sympy_compat()
 
     # Separate optimisers — critic often benefits from slightly different lr
     opt_p = torch.optim.Adam(policy.parameters(), lr=lr)

@@ -1,4 +1,5 @@
 numpy
 matplotlib
 torch
+sympy>=1.12,<2
 flask

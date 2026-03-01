@@ -611,7 +611,7 @@ function updateMetricsDisplay() {
 
 function setOptimizing(running, method) {
   state.optimizing = running;
-  const btns = ["btn-cma", "btn-cem", "btn-ppo", "btn-ppo-train", "btn-reset"].map(id => document.getElementById(id));
+  const btns = ["btn-cma", "btn-cem", "btn-ppo", "btn-ppo-train", "btn-ppo-seq", "btn-reset"].map(id => document.getElementById(id));
   btns.forEach(b => { b.disabled = running; });
 
   const statusEl  = document.getElementById("opt-status");
@@ -647,7 +647,7 @@ function finishProgress() {
 
 async function runOptimizer(method) {
   if (state.optimizing) return;
-  const labels = { cma: "CMA-ES", cem: "CEM", ppo: "PPO", ppo_extended: "PPO Extended Training" };
+  const labels = { cma: "CMA-ES", cem: "CEM", ppo: "PPO", ppo_extended: "PPO Extended Training", ppo_sequential: "PPO Sequential (6-step MDP)" };
   setOptimizing(true, labels[method]);
 
   try {
@@ -755,6 +755,7 @@ document.addEventListener("DOMContentLoaded", () => {
   document.getElementById("btn-cem").addEventListener("click",       () => runOptimizer("cem"));
   document.getElementById("btn-ppo").addEventListener("click",       () => runOptimizer("ppo"));
   document.getElementById("btn-ppo-train").addEventListener("click", () => runOptimizer("ppo_extended"));
+  document.getElementById("btn-ppo-seq").addEventListener("click",   () => runOptimizer("ppo_sequential"));
   document.getElementById("btn-reset").addEventListener("click",      resetAll);
 
   // Initial computation

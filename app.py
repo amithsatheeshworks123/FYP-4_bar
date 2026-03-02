@@ -149,7 +149,7 @@ def run_cma():
         obj, params, BOUNDS, iterations=60, population=120, restarts=3, seed=seed_val
     )
     best_p = project(best_p)
-    _, _, _, mse, max_dev = path_reward(best_p, target_line=tl, enforce_grashof="crank_rocker")
+    best_r, _, _, mse, max_dev = path_reward(best_p, target_line=tl, enforce_grashof="crank_rocker")
 
     return jsonify({
         "best_params": best_p.tolist(),
@@ -174,7 +174,7 @@ def run_cem():
         obj, params, BOUNDS, iterations=80, pop=200, elite_frac=0.2, sigma=0.1, seed=seed_val
     )
     best_p = project(best_p)
-    _, _, _, mse, max_dev = path_reward(best_p, target_line=tl, enforce_grashof="crank_rocker")
+    best_r, _, _, mse, max_dev = path_reward(best_p, target_line=tl, enforce_grashof="crank_rocker")
 
     return jsonify({
         "best_params": best_p.tolist(),
@@ -243,7 +243,7 @@ def run_ppo():
             target_line=tl,
         )
         best_p = project(best_p)
-        _, _, _, mse, max_dev = path_reward(best_p, target_line=tl, enforce_grashof="crank_rocker")
+        best_r, _, _, mse, max_dev = path_reward(best_p, target_line=tl, enforce_grashof="crank_rocker")
 
         return jsonify({
             "best_params": best_p.tolist(),
@@ -313,7 +313,7 @@ def run_ppo_extended():
             target_line=tl,
         )
         best_p = project(best_p)
-        _, _, _, mse, max_dev = path_reward(best_p, target_line=tl, enforce_grashof="crank_rocker")
+        best_r, _, _, mse, max_dev = path_reward(best_p, target_line=tl, enforce_grashof="crank_rocker")
 
         return jsonify({
             "best_params": best_p.tolist(),
@@ -359,8 +359,8 @@ def run_ppo_sequential():
             log_samples = False,
         )
         best_p = project(best_p)
-        _, _, _, mse, max_dev = path_reward(best_p, target_line=tl,
-                                            enforce_grashof="crank_rocker")
+        best_r, _, _, mse, max_dev = path_reward(best_p, target_line=tl,
+                                                 enforce_grashof="crank_rocker")
 
         return jsonify({
             "best_params": best_p.tolist(),

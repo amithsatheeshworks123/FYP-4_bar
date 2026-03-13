@@ -21,12 +21,27 @@ const METRICS_DEBOUNCE_MS = 350;
 const state = {
   params:     [...DEFAULT_PARAMS],
   lockMask:   [false, false, false, false, false, false],
-  targetC:    0.0,
   seed:       null,
   frame:      0,
   paused:     false,
   optimizing: false,
   metrics:    { reward: null, mse: null, maxDev: null, rom: null },
+
+  // Trajectory state
+  trajType:     "straight_line",
+  trajParams:   { c: 0.0 },
+  targetPts:    [],           // [[x,y], ...] from preview/metrics API
+  _trajTypes:   [],           // schema fetched from /api/trajectories
+
+  // Custom-path draw mode
+  drawMode:     false,
+  customPoints: [],           // [{x,y}] world coords
+  isDrawing:    false,
+  lastDrawTime: 0,
+
+  // Canvas transform cached from last render (for draw mode hit-test)
+  transform:    null,
+
   // cached full-revolution data (updated after params change)
   fullPath:         [],   // [{x,y}] coupler midpoints
   rockerAnglesArr:  [],   // [deg | null]
@@ -99,6 +114,11 @@ function w2c(wx, wy, origin, scale) {
   return { x: origin.x + wx * scale, y: origin.y - wy * scale };
 }
 
+/** Inverse: canvas pixel → world coords. */
+function c2w(px, py, origin, scale) {
+  return { x: (px - origin.x) / scale, y: (origin.y - py) / scale };
+}
+
 /** Draw cross-hatch ground symbol. */
 function drawGround(cx, cy, sz) {
   ctx.save();
@@ -165,6 +185,11 @@ function computeTransform(p) {
     }
   }
 
+  // Also expand to include target trajectory points
+  for (let i = 0; i < state.targetPts.length; i++) {
+    expand(state.targetPts[i][0], state.targetPts[i][1]);
+  }
+
   // Guard against degenerate case (all points collapsed)
   if (!isFinite(minX)) { minX = -0.1; maxX = 0.3; minY = -0.2; maxY = 0.2; }
 
@@ -218,6 +243,7 @@ function render() {
 
   const p     = state.params;
   const trans = computeTransform(p);
+  state.transform = trans;   // cache for draw mode coordinate conversion
   const { origin: O, scale: S } = trans;
   const t = (wx, wy) => w2c(wx, wy, O, S);
 
@@ -240,12 +266,31 @@ function render() {
     ctx.restore();
   }
 
-  // ── Target line (dashed amber) ─────────────────────────
-  {
-    const xLeft  = (0    - O.x) / S;   // left  canvas edge → world x
-    const xRight = (cssW - O.x) / S;   // right canvas edge → world x (use CSS px)
-    const tl1 = t(xLeft,  state.targetC);
-    const tl2 = t(xRight, state.targetC);
+  // ── Target trajectory (dashed amber) ──────────────────
+  const tp = state.targetPts;
+  if (tp && tp.length > 1) {
+    ctx.save();
+    ctx.setLineDash([6, 5]);
+    ctx.strokeStyle = "#fbbf24";
+    ctx.lineWidth   = 1.8;
+    ctx.globalAlpha = 0.75;
+    ctx.beginPath();
+    const tp0 = t(tp[0][0], tp[0][1]);
+    ctx.moveTo(tp0.x, tp0.y);
+    for (let i = 1; i < tp.length; i++) {
+      const tpi = t(tp[i][0], tp[i][1]);
+      ctx.lineTo(tpi.x, tpi.y);
+    }
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.restore();
+  } else if (state.trajType === "straight_line") {
+    // Fallback: draw horizontal dashed line if preview not yet loaded
+    const c      = (state.trajParams && state.trajParams.c != null) ? state.trajParams.c : 0.0;
+    const xLeft  = (0    - O.x) / S;
+    const xRight = (cssW - O.x) / S;
+    const tl1    = t(xLeft,  c);
+    const tl2    = t(xRight, c);
     ctx.save();
     ctx.setLineDash([6, 5]);
     ctx.strokeStyle = "#fbbf24";
@@ -256,6 +301,30 @@ function render() {
     ctx.lineTo(tl2.x, tl2.y);
     ctx.stroke();
     ctx.setLineDash([]);
+    ctx.restore();
+  }
+
+  // ── Custom path in-progress dots (draw mode) ──────────
+  if (state.trajType === "custom" && state.customPoints.length > 1) {
+    ctx.save();
+    ctx.strokeStyle = "rgba(251,191,36,0.4)";
+    ctx.lineWidth   = 1.5;
+    ctx.beginPath();
+    const cp0 = t(state.customPoints[0].x, state.customPoints[0].y);
+    ctx.moveTo(cp0.x, cp0.y);
+    for (let i = 1; i < state.customPoints.length; i++) {
+      const cpi = t(state.customPoints[i].x, state.customPoints[i].y);
+      ctx.lineTo(cpi.x, cpi.y);
+    }
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  // ── Draw-mode overlay hint ─────────────────────────────
+  if (state.drawMode) {
+    ctx.save();
+    ctx.fillStyle   = "rgba(251,191,36,0.08)";
+    ctx.fillRect(0, 0, cssW, cssH);
     ctx.restore();
   }
 
@@ -520,16 +589,280 @@ function initLocks() {
   });
 }
 
-// ── UI: target & seed ─────────────────────────────────────────────────────────
+// ── UI: seed ──────────────────────────────────────────────────────────────────
 
-function initTargetSeed() {
-  document.getElementById("target-c").addEventListener("change", e => {
-    state.targetC = parseFloat(e.target.value) || 0.0;
-    onParamChange();
-  });
+function initSeed() {
   document.getElementById("seed-input").addEventListener("change", e => {
     const s = e.target.value.trim().toLowerCase();
     state.seed = (s === "" || s === "random" || s === "none") ? null : parseInt(s, 10);
+  });
+}
+
+// ── UI: trajectory selector ───────────────────────────────────────────────────
+
+/** Fetch trajectory types from server and populate dropdown. */
+async function fetchTrajectoryTypes() {
+  try {
+    const resp = await fetch("/api/trajectories");
+    if (!resp.ok) return;
+    const types = await resp.json();
+    state._trajTypes = types;
+
+    const select = document.getElementById("traj-type");
+    select.innerHTML = "";
+    types.forEach(typeInfo => {
+      const opt = document.createElement("option");
+      opt.value       = typeInfo.id;
+      opt.textContent = typeInfo.label;
+      select.appendChild(opt);
+    });
+
+    // Initialise with first type (straight_line)
+    const first = types[0];
+    state.trajType   = first.id;
+    state.trajParams = _defaultParams(first);
+    renderTrajParams(types, first.id);
+    updateMetricLabels(first.id);
+
+    select.addEventListener("change", () => {
+      onTrajTypeChange(types, select.value);
+    });
+
+    // Initial preview (non-blocking)
+    fetchTrajectoryPreview();
+  } catch (err) {
+    console.warn("Failed to fetch trajectory types:", err);
+  }
+}
+
+/** Build a default params object from a trajectory type schema entry. */
+function _defaultParams(typeInfo) {
+  const p = {};
+  typeInfo.params.forEach(param => {
+    if (param.type !== "points") {
+      p[param.key] = param.default;
+    }
+  });
+  return p;
+}
+
+/** Render dynamic parameter input rows into #traj-params-container. */
+function renderTrajParams(types, selectedId) {
+  const container = document.getElementById("traj-params-container");
+  container.innerHTML = "";
+
+  const typeInfo = types.find(t => t.id === selectedId);
+  if (!typeInfo) return;
+
+  typeInfo.params.forEach(param => {
+    if (param.type === "points") return;  // handled by draw mode
+
+    const row = document.createElement("div");
+    row.style.cssText = "display:flex; align-items:center; gap:8px; margin-top:6px;";
+
+    const label = document.createElement("span");
+    label.className   = "param-lbl";
+    label.textContent = param.label;
+    label.style.minWidth = "90px";
+    row.appendChild(label);
+
+    if (param.type === "bool") {
+      const chk = document.createElement("input");
+      chk.type    = "checkbox";
+      chk.id      = `traj-param-${param.key}`;
+      chk.checked = state.trajParams[param.key] !== undefined
+                    ? !!state.trajParams[param.key]
+                    : !!param.default;
+      chk.style.cssText = "width:16px; height:16px; cursor:pointer; accent-color:#00d4ff;";
+      chk.addEventListener("change", () => {
+        state.trajParams[param.key] = chk.checked;
+        onTrajParamChange();
+      });
+      row.appendChild(chk);
+    } else {
+      // float
+      const input = document.createElement("input");
+      input.type      = "number";
+      input.id        = `traj-param-${param.key}`;
+      input.className = "text-input";
+      input.style.flex = "1";
+      input.step      = "0.01";
+      if (param.min !== undefined) input.min = param.min;
+      if (param.max !== undefined) input.max = param.max;
+      const curVal = state.trajParams[param.key];
+      input.value = curVal !== undefined ? curVal : param.default;
+      input.addEventListener("change", () => {
+        const v = parseFloat(input.value);
+        state.trajParams[param.key] = isNaN(v) ? param.default : v;
+        onTrajParamChange();
+      });
+      row.appendChild(input);
+    }
+
+    container.appendChild(row);
+  });
+}
+
+/** Called when user picks a new trajectory type from the dropdown. */
+function onTrajTypeChange(types, newId) {
+  state.trajType = newId;
+
+  const typeInfo = types.find(t => t.id === newId);
+  state.trajParams = _defaultParams(typeInfo || { params: [] });
+
+  // For custom, fold in existing drawn points
+  if (newId === "custom") {
+    state.trajParams.points = state.customPoints.map(p => [p.x, p.y]);
+  }
+
+  // Show/hide draw mode widget
+  const drawContainer = document.getElementById("draw-mode-container");
+  drawContainer.style.display = newId === "custom" ? "block" : "none";
+  if (newId !== "custom" && state.drawMode) {
+    _setDrawMode(false);
+  }
+
+  renderTrajParams(types, newId);
+  updateMetricLabels(newId);
+  state.targetPts = [];
+  fetchTrajectoryPreview();
+  onParamChange();
+}
+
+/** Called whenever a trajectory parameter input changes. */
+function onTrajParamChange() {
+  fetchTrajectoryPreview();
+  onParamChange();
+}
+
+/** Update MSE / Max Dev metric labels based on current trajectory type. */
+function updateMetricLabels(trajType) {
+  const isStraight = trajType === "straight_line";
+  const mseLabel   = document.getElementById("label-mse");
+  const devLabel   = document.getElementById("label-maxdev");
+  if (mseLabel) mseLabel.textContent = isStraight ? "MSE"     : "MSE (NN m²)";
+  if (devLabel) devLabel.textContent = isStraight ? "Max Dev" : "Max Dev (NN m)";
+}
+
+// ── Trajectory preview ────────────────────────────────────────────────────────
+
+let _previewTimer = null;
+
+function fetchTrajectoryPreview() {
+  clearTimeout(_previewTimer);
+  _previewTimer = setTimeout(async () => {
+    try {
+      const resp = await fetch("/api/trajectory/preview", {
+        method:  "POST",
+        headers: { "Content-Type": "application/json" },
+        body:    JSON.stringify({
+          traj_type:   state.trajType,
+          traj_params: state.trajParams,
+        }),
+      });
+      if (!resp.ok) return;
+      const data = await resp.json();
+      state.targetPts = data.points || [];
+    } catch (err) {
+      console.warn("Trajectory preview failed:", err);
+    }
+  }, 150);
+}
+
+// ── Draw mode ─────────────────────────────────────────────────────────────────
+
+function _setDrawMode(active) {
+  state.drawMode = active;
+  const btn = document.getElementById("btn-draw-toggle");
+  if (btn) {
+    btn.textContent = active ? "✏️ Draw Mode: ON" : "✏️ Draw Mode: OFF";
+    btn.style.borderColor = active ? "#fbbf24" : "";
+    btn.style.color       = active ? "#fbbf24" : "";
+  }
+  canvas.style.cursor = active ? "crosshair" : "";
+}
+
+function initDrawMode() {
+  const MIN_DIST_SQ = 0.005 * 0.005;  // 5 mm minimum between consecutive points
+
+  function getCanvasPoint(evt) {
+    const rect = canvas.getBoundingClientRect();
+    const px   = evt.clientX - rect.left;
+    const py   = evt.clientY - rect.top;
+    if (!state.transform) return null;
+    return c2w(px, py, state.transform.origin, state.transform.scale);
+  }
+
+  function recordPoint(pt) {
+    const last = state.customPoints[state.customPoints.length - 1];
+    if (last) {
+      const dx = pt.x - last.x, dy = pt.y - last.y;
+      if (dx * dx + dy * dy < MIN_DIST_SQ) return;
+    }
+    state.customPoints.push(pt);
+    state.trajParams.points = state.customPoints.map(p => [p.x, p.y]);
+    // Throttle preview calls while dragging
+    const now = Date.now();
+    if (now - state.lastDrawTime > 200) {
+      state.lastDrawTime = now;
+      fetchTrajectoryPreview();
+    }
+  }
+
+  // Mouse events
+  canvas.addEventListener("mousedown", evt => {
+    if (!state.drawMode || state.trajType !== "custom") return;
+    evt.preventDefault();
+    state.isDrawing = true;
+    const pt = getCanvasPoint(evt);
+    if (pt) recordPoint(pt);
+  });
+
+  canvas.addEventListener("mousemove", evt => {
+    if (!state.isDrawing || !state.drawMode) return;
+    evt.preventDefault();
+    const pt = getCanvasPoint(evt);
+    if (pt) recordPoint(pt);
+  });
+
+  canvas.addEventListener("mouseup",    () => { state.isDrawing = false; });
+  canvas.addEventListener("mouseleave", () => { state.isDrawing = false; });
+
+  // Touch events (for mobile)
+  canvas.addEventListener("touchstart", evt => {
+    if (!state.drawMode || state.trajType !== "custom") return;
+    evt.preventDefault();
+    state.isDrawing = true;
+    const touch = evt.touches[0];
+    const pt = getCanvasPoint({ clientX: touch.clientX, clientY: touch.clientY });
+    if (pt) recordPoint(pt);
+  }, { passive: false });
+
+  canvas.addEventListener("touchmove", evt => {
+    if (!state.isDrawing || !state.drawMode) return;
+    evt.preventDefault();
+    const touch = evt.touches[0];
+    const pt = getCanvasPoint({ clientX: touch.clientX, clientY: touch.clientY });
+    if (pt) recordPoint(pt);
+  }, { passive: false });
+
+  canvas.addEventListener("touchend",   () => { state.isDrawing = false; });
+
+  // Draw toggle button
+  document.getElementById("btn-draw-toggle").addEventListener("click", () => {
+    _setDrawMode(!state.drawMode);
+    if (!state.drawMode && state.customPoints.length > 0) {
+      // Finalise: trigger preview after releasing draw mode
+      fetchTrajectoryPreview();
+    }
+  });
+
+  // Clear button
+  document.getElementById("btn-draw-clear").addEventListener("click", () => {
+    state.customPoints = [];
+    state.trajParams.points = [];
+    state.targetPts = [];
+    _setDrawMode(false);
   });
 }
 
@@ -556,9 +889,10 @@ async function fetchMetrics() {
       method:  "POST",
       headers: { "Content-Type": "application/json" },
       body:    JSON.stringify({
-        params:    state.params,
-        lock_mask: state.lockMask,
-        target_c:  state.targetC,
+        params:       state.params,
+        lock_mask:    state.lockMask,
+        traj_type:    state.trajType,
+        traj_params:  state.trajParams,
       }),
     });
     if (!resp.ok) return;
@@ -572,6 +906,11 @@ async function fetchMetrics() {
     state.metrics.mse    = data.mse;
     state.metrics.maxDev = data.max_dev;
     state.metrics.rom    = data.rom;
+
+    // Use target_pts from metrics response when available
+    if (data.target_pts && data.target_pts.length > 0) {
+      state.targetPts = data.target_pts;
+    }
 
     updateMetricsDisplay();
 
@@ -647,7 +986,13 @@ function finishProgress() {
 
 async function runOptimizer(method) {
   if (state.optimizing) return;
-  const labels = { cma: "CMA-ES", cem: "CEM", ppo: "PPO", ppo_extended: "PPO Extended Training", ppo_sequential: "PPO Sequential (6-step MDP)" };
+  const labels = {
+    cma:            "CMA-ES",
+    cem:            "CEM",
+    ppo:            "PPO",
+    ppo_extended:   "PPO Extended Training",
+    ppo_sequential: "PPO Sequential (6-step MDP)",
+  };
   setOptimizing(true, labels[method]);
 
   try {
@@ -655,10 +1000,11 @@ async function runOptimizer(method) {
       method:  "POST",
       headers: { "Content-Type": "application/json" },
       body:    JSON.stringify({
-        params:    state.params,
-        target_c:  state.targetC,
-        seed:      state.seed,
-        lock_mask: state.lockMask,
+        params:      state.params,
+        traj_type:   state.trajType,
+        traj_params: state.trajParams,
+        seed:        state.seed,
+        lock_mask:   state.lockMask,
       }),
     });
     const data = await resp.json();
@@ -688,17 +1034,31 @@ async function runOptimizer(method) {
 }
 
 function resetAll() {
-  state.params   = [...DEFAULT_PARAMS];
-  state.lockMask = [false, false, false, false, false, false];
-  state.targetC  = 0.0;
-  state.seed     = null;
+  state.params      = [...DEFAULT_PARAMS];
+  state.lockMask    = [false, false, false, false, false, false];
+  state.seed        = null;
+  state.customPoints = [];
+  state.targetPts   = [];
+  _setDrawMode(false);
+
+  // Reset trajectory to first available type
+  const types = state._trajTypes;
+  if (types && types.length > 0) {
+    const first = types[0];
+    state.trajType   = first.id;
+    state.trajParams = _defaultParams(first);
+    document.getElementById("traj-type").value = first.id;
+    renderTrajParams(types, first.id);
+    updateMetricLabels(first.id);
+    document.getElementById("draw-mode-container").style.display = "none";
+    fetchTrajectoryPreview();
+  }
 
   refreshSliderUI();
 
   PARAM_KEYS.forEach(key => {
     document.getElementById(`lock-${key}`).checked = false;
   });
-  document.getElementById("target-c").value  = "0.0";
   document.getElementById("seed-input").value = "random";
   document.getElementById("opt-status").textContent = "";
   document.getElementById("opt-status").className   = "opt-status";
@@ -747,7 +1107,8 @@ document.addEventListener("DOMContentLoaded", () => {
   resizeCanvas();
   initSliders();
   initLocks();
-  initTargetSeed();
+  initSeed();
+  initDrawMode();
   initChart();
 
   // Wire optimizer buttons
@@ -758,9 +1119,11 @@ document.addEventListener("DOMContentLoaded", () => {
   document.getElementById("btn-ppo-seq").addEventListener("click",   () => runOptimizer("ppo_sequential"));
   document.getElementById("btn-reset").addEventListener("click",      resetAll);
 
-  // Initial computation
-  onParamChange();
+  // Fetch trajectory types, then kick off initial computation
+  fetchTrajectoryTypes().then(() => {
+    onParamChange();
+  });
 
-  // Start animation
+  // Start animation loop
   tick();
 });

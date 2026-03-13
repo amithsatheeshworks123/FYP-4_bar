@@ -56,6 +56,7 @@
                 <span class="dot" style="background:#a78bfa"></span><span class="leg-lbl">Coupler</span>
                 <span class="dot" style="background:#22c55e"></span><span class="leg-lbl">Rocker</span>
                 <span class="dot" style="background:#f43f5e"></span><span class="leg-lbl">Path</span>
+                <span class="dot" style="background:#fbbf24; border:1px dashed #fbbf24"></span><span class="leg-lbl">Target</span>
               </div>
             </div>
             <div class="card-actions">
@@ -183,16 +184,34 @@
 
           <hr class="divider" />
 
-          <!-- Target & seed -->
+          <!-- Target trajectory & seed -->
           <section class="ctrl-section">
             <div class="two-col-fields">
               <div class="field-group">
-                <label class="field-lbl" for="target-c">Target line  y = c</label>
-                <input type="number" id="target-c" class="text-input" value="0.0" step="0.01" placeholder="0.0" />
+                <label class="field-lbl" for="traj-type">Target Trajectory</label>
+                <select id="traj-type" class="text-input">
+                  <option value="straight_line">Straight Line (y = c)</option>
+                </select>
               </div>
               <div class="field-group">
                 <label class="field-lbl" for="seed-input">Random seed</label>
                 <input type="text" id="seed-input" class="text-input" value="random" placeholder="random" />
+              </div>
+            </div>
+            <!-- Dynamic trajectory parameter inputs (rendered by JS) -->
+            <div id="traj-params-container"></div>
+            <!-- Draw mode controls (shown only for Custom Path) -->
+            <div id="draw-mode-container" style="display:none; margin-top:8px;">
+              <div style="display:flex; gap:6px; align-items:center;">
+                <button id="btn-draw-toggle" class="btn btn-opt" style="flex:1; padding:5px 8px; font-size:0.75rem;">
+                  ✏️ Draw Mode: OFF
+                </button>
+                <button id="btn-draw-clear" class="btn btn-reset" style="flex:0 0 auto; padding:5px 10px; font-size:0.75rem;">
+                  🗑 Clear
+                </button>
+              </div>
+              <div id="draw-mode-hint" style="font-size:0.68rem; color:#526480; margin-top:4px;">
+                Click &amp; drag on the canvas to record a custom path.
               </div>
             </div>
           </section>
@@ -208,11 +227,11 @@
                 <div id="stat-reward" class="metric-value neutral">—</div>
               </div>
               <div class="metric-card">
-                <div class="metric-label">MSE</div>
+                <div id="label-mse" class="metric-label">MSE</div>
                 <div id="stat-mse" class="metric-value neutral">—</div>
               </div>
               <div class="metric-card">
-                <div class="metric-label">Max Dev</div>
+                <div id="label-maxdev" class="metric-label">Max Dev</div>
                 <div id="stat-maxdev" class="metric-value neutral">—</div>
               </div>
             </div>

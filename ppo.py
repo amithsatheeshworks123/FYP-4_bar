@@ -300,6 +300,7 @@ def ppo_train(
     baseline=None,
     early_stop_reward=None,  # stop if best_r >= this value
     target_line=None,        # passed directly to batch_path_reward
+    batch_obj=None,          # optional batch fn(X) → rewards; overrides batch_path_reward
 ):
     """
     Train using vectorised batch_path_reward — no multiprocessing needed.
@@ -373,7 +374,10 @@ def ppo_train(
         repaired   = batch_repair(samples_np, bounds)
 
         # ── Vectorised reward evaluation ───────────────────────────────────────
-        rewards_np = batch_path_reward(repaired, target_line=target_line)
+        if batch_obj is not None:
+            rewards_np = batch_obj(repaired)
+        else:
+            rewards_np = batch_path_reward(repaired, target_line=target_line)
         t_eval = time.time()
 
         # ── Count feasible samples and update collapse detector (Fix D) ────────

@@ -217,6 +217,7 @@ def ppo_sequential_train(
     seed        = None,
     target_line = None,
     log_samples = False,
+    batch_obj   = None,  # optional: overrides batch_path_reward for non-straight targets
 ):
     """
     Train a sequential PPO agent on FourBarEnv.
@@ -242,7 +243,7 @@ def ppo_sequential_train(
         torch.manual_seed(seed)
         np.random.seed(seed)
 
-    env    = FourBarEnv(bounds, target_line=target_line)
+    env    = FourBarEnv(bounds, target_line=target_line, batch_obj=batch_obj)
     policy = SequentialPolicy(obs_dim=env.obs_dim, act_dim=env.act_dim).to(device)
     value  = SequentialValue(obs_dim=env.obs_dim).to(device)
 

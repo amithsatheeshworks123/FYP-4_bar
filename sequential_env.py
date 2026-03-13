@@ -55,9 +55,10 @@ class FourBarEnv:
     OBS_DIM     = 15   # 6 params + 6 step one-hot + 3 feasibility signals
     ACT_DIM     = 1    # scalar action in [-1, 1]
 
-    def __init__(self, bounds, target_line=None):
+    def __init__(self, bounds, target_line=None, batch_obj=None):
         self.bounds      = list(bounds)
         self.target_line = target_line
+        self.batch_obj   = batch_obj  # optional: overrides batch_path_reward at step 5
 
         self.lows   = np.array([b[0] for b in bounds], dtype=np.float32)
         self.highs  = np.array([b[1] for b in bounds], dtype=np.float32)
@@ -162,10 +163,13 @@ class FourBarEnv:
 
         elif step_completed == 5:
             # Full design is now complete — evaluate actual path quality.
-            r = batch_path_reward(
-                self.params[np.newaxis, :],
-                target_line=self.target_line
-            )
+            if self.batch_obj is not None:
+                r = self.batch_obj(self.params[np.newaxis, :])
+            else:
+                r = batch_path_reward(
+                    self.params[np.newaxis, :],
+                    target_line=self.target_line
+                )
             return float(r[0])
 
         else:

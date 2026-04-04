@@ -1,9 +1,9 @@
 """
-Constraint-aware CMA-ES style optimizer (v2).
-Resamples valid elites only; per-dimension sigma based on bounds.
+CMA-ES optimizer using the pycma package (full covariance matrix adaptation).
 """
 
 import numpy as np
+import cma
 from typing import Callable, Tuple
 
 
@@ -13,50 +13,55 @@ def optimize(
     bounds,
     iterations: int = 80,
     population: int = 120,
-    elite_frac: float = 0.2,
+    elite_frac: float = 0.2,  # ignored — CMA-ES handles selection internally
     restarts: int = 3,
     seed: int = None,
 ) -> Tuple[float, np.ndarray, list, list]:
-    rng = np.random.default_rng(seed)
-    low = np.array([b[0] for b in bounds])
-    high = np.array([b[1] for b in bounds])
+    low = np.array([b[0] for b in bounds], dtype=float)
+    high = np.array([b[1] for b in bounds], dtype=float)
     span = high - low
+    sigma0 = 0.3 * float(np.mean(span))
+
     best_reward = -np.inf
     best_params = np.array(init_params, dtype=float)
     history = []
     best_history = []
-    elite_count = max(1, int(population * elite_frac))
 
-    def run_once(start_mean):
-        nonlocal best_reward, best_params
-        mean = start_mean.copy()
-        sigma = np.maximum(span * 0.1, 0.02)
-        for _ in range(iterations):
-            samples = rng.normal(scale=sigma, size=(population, len(mean))) + mean
-            samples = np.clip(samples, low, high)
-            rewards = np.array(objective_fn(samples))
-            valid_mask = rewards > -1e8
-            if not valid_mask.any():
-                sigma *= 0.7
-                continue
-            samples = samples[valid_mask]
-            rewards = rewards[valid_mask]
-            idx = rewards.argsort()[::-1][:elite_count]
-            elites = samples[idx]
-            elite_rewards = rewards[idx]
-            mean = elites.mean(axis=0)
-            sigma = elites.std(axis=0) + 1e-3
-            if elite_rewards[0] > best_reward:
-                best_reward = float(elite_rewards[0])
-                best_params = elites[0].copy()
-            history.append(float(rewards.mean()))
-            best_history.append(best_reward)
+    cma_opts = {
+        'popsize': population,
+        'bounds': [low.tolist(), high.tolist()],
+        'maxiter': iterations,
+        'tolfun': 1e-11,
+        'tolx': 1e-11,
+        'CMA_active': True,
+        'verbose': -9,  # suppress all output
+    }
+    if seed is not None:
+        cma_opts['seed'] = int(seed)
+
+    rng = np.random.default_rng(seed)
 
     for r in range(max(1, restarts)):
         if r == 0:
-            start = np.array(init_params, dtype=float)
+            x0 = np.array(init_params, dtype=float)
         else:
-            start = low + rng.random(len(init_params)) * span
-        run_once(start)
+            x0 = low + rng.random(len(init_params)) * span
+
+        es = cma.CMAEvolutionStrategy(x0.tolist(), sigma0, cma_opts)
+
+        while not es.stop():
+            candidates = es.ask()  # list of lists, len == population
+            X = np.clip(np.array(candidates), low, high)
+            rewards = np.asarray(objective_fn(X), dtype=float)
+            # CMA-ES minimizes, our objective maximizes — negate
+            fitnesses = (-rewards).tolist()
+            es.tell(candidates, fitnesses)
+
+            history.append(float(rewards.mean()))
+            gen_best = float(rewards.max())
+            if gen_best > best_reward:
+                best_reward = gen_best
+                best_params = X[int(np.argmax(rewards))].copy()
+            best_history.append(best_reward)
 
     return best_reward, best_params, history, best_history

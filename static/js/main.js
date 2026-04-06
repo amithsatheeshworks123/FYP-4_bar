@@ -31,6 +31,16 @@ const state = {
   fullPath:         [],   // [{x,y}] coupler midpoints
   rockerAnglesArr:  [],   // [deg | null]
   crankAnglesArr:   [],   // [rad]
+  // trajectory state
+  trajType:       "straight",
+  trajParams:     {},
+  trajDefs:       [],       // populated from GET /api/trajectories
+  targetPts:      [],       // [[x,y],...] from /api/trajectory/preview
+  // custom drawing
+  drawMode:       false,
+  customPoints:   [],       // [[x,y],...] user-drawn points
+  // convergence history
+  convHistory:    null,     // [float] from last optimizer run
 };
 
 // ── Four-bar kinematics (mirrors Python closure() / solve_rocker_angle()) ────
@@ -83,6 +93,126 @@ function computeFullPath(p) {
     }
   }
   return { pts, rockers, cranks };
+}
+
+// ── Trajectory definitions & preview ─────────────────────────────────────────
+
+async function fetchTrajectories() {
+  try {
+    const resp = await fetch("/api/trajectories");
+    if (!resp.ok) return;
+    state.trajDefs = await resp.json();
+    const sel = document.getElementById("traj-type");
+    sel.innerHTML = "";
+    state.trajDefs.forEach(td => {
+      const opt = document.createElement("option");
+      opt.value = td.id;
+      opt.textContent = td.name;
+      sel.appendChild(opt);
+    });
+    sel.value = state.trajType;
+    buildTrajParamInputs();
+  } catch (e) { console.warn("Failed to fetch trajectories:", e); }
+}
+
+function buildTrajParamInputs() {
+  const container = document.getElementById("traj-params-container");
+  container.innerHTML = "";
+  const def = state.trajDefs.find(d => d.id === state.trajType);
+  if (!def) return;
+
+  // Show/hide custom draw button and info
+  const drawBtn = document.getElementById("btn-draw-custom");
+  const customInfo = document.getElementById("custom-points-info");
+  if (state.trajType === "custom") {
+    drawBtn.style.display = "";
+    customInfo.style.display = "";
+    updateCustomPointsCount();
+  } else {
+    drawBtn.style.display = "none";
+    customInfo.style.display = "none";
+    if (state.drawMode) toggleDrawMode();
+  }
+
+  def.params.forEach(p => {
+    const row = document.createElement("div");
+    row.className = "traj-param-row";
+
+    const lbl = document.createElement("span");
+    lbl.className = "param-lbl";
+    lbl.textContent = p.label;
+
+    const slider = document.createElement("input");
+    slider.type = "range";
+    slider.className = "slider";
+    slider.min = p.min;
+    slider.max = p.max;
+    slider.step = ((p.max - p.min) / 200).toFixed(6);
+    const curVal = state.trajParams[p.key] !== undefined ? state.trajParams[p.key] : p.default;
+    state.trajParams[p.key] = curVal;
+    slider.value = curVal;
+
+    const numBox = document.createElement("input");
+    numBox.type = "number";
+    numBox.className = "num-box";
+    numBox.min = p.min;
+    numBox.max = p.max;
+    numBox.step = slider.step;
+    numBox.value = curVal;
+
+    slider.addEventListener("input", () => {
+      const v = parseFloat(slider.value);
+      state.trajParams[p.key] = v;
+      numBox.value = v.toFixed(4);
+      updateSliderFill(slider);
+      onTrajChange();
+    });
+    numBox.addEventListener("change", () => {
+      let v = parseFloat(numBox.value);
+      if (isNaN(v)) v = p.default;
+      v = Math.max(p.min, Math.min(p.max, v));
+      state.trajParams[p.key] = v;
+      slider.value = v;
+      numBox.value = v.toFixed(4);
+      updateSliderFill(slider);
+      onTrajChange();
+    });
+
+    row.appendChild(lbl);
+    row.appendChild(slider);
+    row.appendChild(numBox);
+    container.appendChild(row);
+    updateSliderFill(slider);
+  });
+}
+
+async function fetchTrajectoryPreview() {
+  try {
+    const body = { traj_type: state.trajType, traj_params: state.trajParams };
+    if (state.trajType === "custom" && state.customPoints.length >= 2) {
+      body.traj_params = { points: state.customPoints };
+    }
+    const resp = await fetch("/api/trajectory/preview", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (!resp.ok) return;
+    const data = await resp.json();
+    state.targetPts = data.points; // [[x,y],...]
+  } catch (e) {
+    console.warn("Trajectory preview failed:", e);
+    state.targetPts = [];
+  }
+}
+
+let trajPreviewTimer = null;
+function onTrajChange() {
+  clearTimeout(trajPreviewTimer);
+  trajPreviewTimer = setTimeout(async () => {
+    await fetchTrajectoryPreview();
+    fetchMetrics();
+  }, 200);
 }
 
 // ── Canvas rendering ──────────────────────────────────────────────────────────
@@ -240,15 +370,37 @@ function render() {
     ctx.restore();
   }
 
-  // ── Target line (dashed amber) ─────────────────────────
-  {
-    const xLeft  = (0    - O.x) / S;   // left  canvas edge → world x
-    const xRight = (cssW - O.x) / S;   // right canvas edge → world x (use CSS px)
-    const tl1 = t(xLeft,  state.targetC);
-    const tl2 = t(xRight, state.targetC);
+  // ── Target trajectory (dashed blue) ─────────────────────
+  if (state.targetPts.length > 1) {
+    ctx.save();
+    ctx.setLineDash([6, 4]);
+    ctx.strokeStyle = "#3b82f6";
+    ctx.lineWidth   = 1.8;
+    ctx.globalAlpha = 0.8;
+    ctx.beginPath();
+    const tp0 = t(state.targetPts[0][0], state.targetPts[0][1]);
+    ctx.moveTo(tp0.x, tp0.y);
+    for (let i = 1; i < state.targetPts.length; i++) {
+      const tpi = t(state.targetPts[i][0], state.targetPts[i][1]);
+      ctx.lineTo(tpi.x, tpi.y);
+    }
+    // Close for non-straight trajectories
+    if (state.trajType !== "straight") {
+      ctx.lineTo(tp0.x, tp0.y);
+    }
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.restore();
+  } else if (state.trajType === "straight") {
+    // Fallback: simple horizontal line
+    const xLeft  = (0    - O.x) / S;
+    const xRight = (cssW - O.x) / S;
+    const c = state.trajParams.c !== undefined ? state.trajParams.c : 0.0;
+    const tl1 = t(xLeft,  c);
+    const tl2 = t(xRight, c);
     ctx.save();
     ctx.setLineDash([6, 5]);
-    ctx.strokeStyle = "#fbbf24";
+    ctx.strokeStyle = "#3b82f6";
     ctx.lineWidth   = 1.5;
     ctx.globalAlpha = 0.7;
     ctx.beginPath();
@@ -256,6 +408,19 @@ function render() {
     ctx.lineTo(tl2.x, tl2.y);
     ctx.stroke();
     ctx.setLineDash([]);
+    ctx.restore();
+  }
+
+  // ── Custom draw points (green dots) ─────────────────────
+  if (state.drawMode && state.customPoints.length > 0) {
+    ctx.save();
+    ctx.fillStyle = "#22c55e";
+    state.customPoints.forEach(cp => {
+      const pp = t(cp[0], cp[1]);
+      ctx.beginPath();
+      ctx.arc(pp.x, pp.y, 4, 0, 2 * Math.PI);
+      ctx.fill();
+    });
     ctx.restore();
   }
 
@@ -450,6 +615,45 @@ function updateChart() {
   }
 }
 
+// ── Custom drawing mode ──────────────────────────────────────────────────────
+
+function toggleDrawMode() {
+  state.drawMode = !state.drawMode;
+  const badge = document.getElementById("draw-mode-badge");
+  const btn   = document.getElementById("btn-draw-custom");
+  badge.style.display = state.drawMode ? "" : "none";
+  btn.classList.toggle("active", state.drawMode);
+  canvas.style.cursor = state.drawMode ? "crosshair" : "";
+}
+
+function updateCustomPointsCount() {
+  const el = document.getElementById("custom-pt-count");
+  if (el) el.textContent = state.customPoints.length + " points";
+}
+
+function canvasClickHandler(e) {
+  if (!state.drawMode) return;
+  const rect = canvas.getBoundingClientRect();
+  const cx = e.clientX - rect.left;
+  const cy = e.clientY - rect.top;
+  // Convert canvas pixel → world coords using current transform
+  const trans = computeTransform(state.params);
+  const wx = (cx - trans.origin.x) / trans.scale;
+  const wy = -(cy - trans.origin.y) / trans.scale;
+  state.customPoints.push([wx, wy]);
+  updateCustomPointsCount();
+}
+
+function canvasDblClickHandler(e) {
+  if (!state.drawMode) return;
+  e.preventDefault();
+  if (state.customPoints.length >= 2) {
+    state.trajParams = { points: state.customPoints.slice() };
+    toggleDrawMode();
+    onTrajChange();
+  }
+}
+
 // ── UI: sliders + number boxes ────────────────────────────────────────────────
 
 function initSliders() {
@@ -523,9 +727,11 @@ function initLocks() {
 // ── UI: target & seed ─────────────────────────────────────────────────────────
 
 function initTargetSeed() {
-  document.getElementById("target-c").addEventListener("change", e => {
-    state.targetC = parseFloat(e.target.value) || 0.0;
-    onParamChange();
+  document.getElementById("traj-type").addEventListener("change", e => {
+    state.trajType = e.target.value;
+    state.trajParams = {};
+    buildTrajParamInputs();
+    onTrajChange();
   });
   document.getElementById("seed-input").addEventListener("change", e => {
     const s = e.target.value.trim().toLowerCase();
@@ -552,14 +758,22 @@ function onParamChange() {
 
 async function fetchMetrics() {
   try {
+    const body = {
+      params:      state.params,
+      lock_mask:   state.lockMask,
+      traj_type:   state.trajType,
+      traj_params: state.trajType === "custom" && state.customPoints.length >= 2
+                     ? { points: state.customPoints }
+                     : state.trajParams,
+    };
+    // Backward compat: also include target_c for straight
+    if (state.trajType === "straight") {
+      body.target_c = state.trajParams.c !== undefined ? state.trajParams.c : 0.0;
+    }
     const resp = await fetch("/api/metrics", {
       method:  "POST",
       headers: { "Content-Type": "application/json" },
-      body:    JSON.stringify({
-        params:    state.params,
-        lock_mask: state.lockMask,
-        target_c:  state.targetC,
-      }),
+      body:    JSON.stringify(body),
     });
     if (!resp.ok) return;
     const data = await resp.json();
@@ -573,9 +787,17 @@ async function fetchMetrics() {
     state.metrics.maxDev = data.max_dev;
     state.metrics.rom    = data.rom;
 
+    // Update MSE label for non-straight
+    const mseLabel = document.getElementById("metric-mse-label");
+    if (data.traj_type && data.traj_type !== "straight") {
+      mseLabel.textContent = "NN Dist";
+    } else {
+      mseLabel.textContent = "MSE";
+    }
+
     updateMetricsDisplay();
 
-    // Also update chart with server-side rocker angles (should match JS)
+    // Also update chart with server-side rocker angles
     state.rockerAnglesArr = data.rocker_angles;
     state.crankAnglesArr  = data.crank_angles;
     updateChart();
@@ -651,15 +873,22 @@ async function runOptimizer(method) {
   setOptimizing(true, labels[method]);
 
   try {
+    const body = {
+      params:      state.params,
+      seed:        state.seed,
+      lock_mask:   state.lockMask,
+      traj_type:   state.trajType,
+      traj_params: state.trajType === "custom" && state.customPoints.length >= 2
+                     ? { points: state.customPoints }
+                     : state.trajParams,
+    };
+    if (state.trajType === "straight") {
+      body.target_c = state.trajParams.c !== undefined ? state.trajParams.c : 0.0;
+    }
     const resp = await fetch(`/api/optimize/${method}`, {
       method:  "POST",
       headers: { "Content-Type": "application/json" },
-      body:    JSON.stringify({
-        params:    state.params,
-        target_c:  state.targetC,
-        seed:      state.seed,
-        lock_mask: state.lockMask,
-      }),
+      body:    JSON.stringify(body),
     });
     const data = await resp.json();
 
@@ -677,6 +906,12 @@ async function runOptimizer(method) {
     updateMetricsDisplay();
     onParamChange();          // rebuild path + chart
 
+    // Show convergence
+    if (data.history && data.history.length > 0) {
+      state.convHistory = data.history;
+      drawConvergenceChart(data.history, labels[method]);
+    }
+
     const statusEl = document.getElementById("opt-status");
     statusEl.textContent = `${labels[method]} complete — reward: ${data.reward.toFixed(4)}`;
   } catch (err) {
@@ -687,22 +922,102 @@ async function runOptimizer(method) {
   }
 }
 
+// ── Convergence chart (pure SVG) ─────────────────────────────────────────────
+
+function drawConvergenceChart(history, label) {
+  const card = document.getElementById("convergence-card");
+  card.style.display = "";
+  document.querySelector(".viz-column").classList.add("has-convergence");
+
+  const svg = document.getElementById("convergence-svg");
+  const rect = svg.parentElement.getBoundingClientRect();
+  const W = rect.width || 400;
+  const H = rect.height || 140;
+  svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+
+  const pad = { top: 14, right: 12, bottom: 24, left: 50 };
+  const pw = W - pad.left - pad.right;
+  const ph = H - pad.top - pad.bottom;
+
+  const n = history.length;
+  if (n === 0) return;
+
+  // Filter out extremely negative values for y-axis scaling
+  const filtered = history.map(v => (v < -1e5 ? NaN : v));
+  const validVals = filtered.filter(v => !isNaN(v));
+  const yMin = validVals.length > 0 ? Math.min(...validVals) : -10;
+  const yMax = validVals.length > 0 ? Math.max(...validVals) : 0;
+  const yRange = (yMax - yMin) || 1;
+  const yLo = yMin - yRange * 0.05;
+  const yHi = yMax + yRange * 0.1;
+
+  function sx(i) { return pad.left + (i / Math.max(n - 1, 1)) * pw; }
+  function sy(v) { return pad.top + ph - ((v - yLo) / (yHi - yLo)) * ph; }
+
+  // Build path string (skip NaN)
+  let pathD = "";
+  let started = false;
+  for (let i = 0; i < n; i++) {
+    const v = filtered[i];
+    if (isNaN(v)) { started = false; continue; }
+    const x = sx(i).toFixed(1);
+    const y = sy(v).toFixed(1);
+    pathD += started ? ` L${x},${y}` : `M${x},${y}`;
+    started = true;
+  }
+
+  // Y-axis ticks
+  const nTicks = 5;
+  let ticksHTML = "";
+  for (let i = 0; i <= nTicks; i++) {
+    const v = yLo + (i / nTicks) * (yHi - yLo);
+    const y = sy(v).toFixed(1);
+    ticksHTML += `<line x1="${pad.left}" y1="${y}" x2="${pad.left + pw}" y2="${y}" stroke="rgba(26,54,84,0.4)" stroke-width="0.5"/>`;
+    ticksHTML += `<text x="${pad.left - 4}" y="${parseFloat(y) + 3}" text-anchor="end" class="conv-label">${v.toFixed(2)}</text>`;
+  }
+
+  // X-axis label
+  const xLabelHTML = `<text x="${pad.left + pw / 2}" y="${H - 2}" text-anchor="middle" class="conv-label">${label} — ${n} steps</text>`;
+
+  svg.innerHTML = `
+    ${ticksHTML}
+    <line x1="${pad.left}" y1="${pad.top}" x2="${pad.left}" y2="${pad.top + ph}" class="conv-axis"/>
+    <line x1="${pad.left}" y1="${pad.top + ph}" x2="${pad.left + pw}" y2="${pad.top + ph}" class="conv-axis"/>
+    <path d="${pathD}" class="conv-line"/>
+    ${xLabelHTML}
+  `;
+}
+
+function hideConvergenceChart() {
+  document.getElementById("convergence-card").style.display = "none";
+  document.querySelector(".viz-column").classList.remove("has-convergence");
+  state.convHistory = null;
+}
+
 function resetAll() {
-  state.params   = [...DEFAULT_PARAMS];
-  state.lockMask = [false, false, false, false, false, false];
-  state.targetC  = 0.0;
-  state.seed     = null;
+  state.params       = [...DEFAULT_PARAMS];
+  state.lockMask     = [false, false, false, false, false, false];
+  state.targetC      = 0.0;
+  state.seed         = null;
+  state.trajType     = "straight";
+  state.trajParams   = {};
+  state.targetPts    = [];
+  state.customPoints = [];
+  if (state.drawMode) toggleDrawMode();
 
   refreshSliderUI();
 
   PARAM_KEYS.forEach(key => {
     document.getElementById(`lock-${key}`).checked = false;
   });
-  document.getElementById("target-c").value  = "0.0";
+  document.getElementById("traj-type").value  = "straight";
   document.getElementById("seed-input").value = "random";
   document.getElementById("opt-status").textContent = "";
   document.getElementById("opt-status").className   = "opt-status";
 
+  buildTrajParamInputs();
+  hideConvergenceChart();
+  onTrajChange();
   onParamChange();
 }
 
@@ -743,7 +1058,7 @@ window.addEventListener("resize", () => {
 
 // ── Bootstrap ─────────────────────────────────────────────────────────────────
 
-document.addEventListener("DOMContentLoaded", () => {
+document.addEventListener("DOMContentLoaded", async () => {
   resizeCanvas();
   initSliders();
   initLocks();
@@ -757,6 +1072,23 @@ document.addEventListener("DOMContentLoaded", () => {
   document.getElementById("btn-ppo-train").addEventListener("click", () => runOptimizer("ppo_extended"));
   document.getElementById("btn-ppo-seq").addEventListener("click",   () => runOptimizer("ppo_sequential"));
   document.getElementById("btn-reset").addEventListener("click",      resetAll);
+
+  // Custom drawing
+  document.getElementById("btn-draw-custom").addEventListener("click", toggleDrawMode);
+  canvas.addEventListener("click", canvasClickHandler);
+  canvas.addEventListener("dblclick", canvasDblClickHandler);
+  document.getElementById("btn-clear-custom").addEventListener("click", () => {
+    state.customPoints = [];
+    updateCustomPointsCount();
+    state.targetPts = [];
+  });
+
+  // Convergence close button
+  document.getElementById("btn-close-conv").addEventListener("click", hideConvergenceChart);
+
+  // Load trajectory definitions from server, then fetch initial preview
+  await fetchTrajectories();
+  await fetchTrajectoryPreview();
 
   // Initial computation
   onParamChange();

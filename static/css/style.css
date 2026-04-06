@@ -97,6 +97,9 @@ html, body {
   gap: 10px;
   min-height: 0;
 }
+.viz-column.has-convergence {
+  grid-template-rows: 1fr 180px 160px;
+}
 
 /* ── Cards ───────────────────────────────────────────────── */
 .card {
@@ -461,6 +464,90 @@ html, body {
   background: var(--border);
   color: var(--txt);
   transform: translateY(-1px);
+}
+
+/* ── Trajectory selector ─────────────────────────────────── */
+.traj-select {
+  cursor: pointer;
+  -webkit-appearance: none;
+  appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' fill='%23526480'%3E%3Cpath d='M2 4l4 4 4-4'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 8px center;
+  padding-right: 26px;
+}
+.traj-params-container {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.traj-param-row {
+  display: grid;
+  grid-template-columns: 70px 1fr 58px;
+  align-items: center;
+  gap: 6px;
+}
+.traj-param-row .param-lbl { font-size: 0.65rem; }
+.traj-param-row .num-box { width: 58px; }
+.traj-param-row .slider { height: 3px; }
+
+/* Custom draw info */
+.custom-info {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 0.68rem;
+  color: var(--txt3);
+  padding: 4px 0;
+}
+.btn-tiny {
+  background: var(--bg);
+  border: 1px solid var(--border2);
+  border-radius: 3px;
+  color: var(--txt3);
+  font-size: 0.6rem;
+  padding: 2px 8px;
+  cursor: pointer;
+}
+.btn-tiny:hover { color: var(--red); border-color: var(--red); }
+
+/* Draw mode badge */
+.draw-mode-badge {
+  position: absolute;
+  top: 8px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(59,130,246,0.2);
+  border: 1px solid var(--blue);
+  color: var(--blue);
+  font-size: 0.62rem;
+  font-weight: 600;
+  padding: 3px 12px;
+  border-radius: 4px;
+  letter-spacing: 0.5px;
+  pointer-events: none;
+}
+
+/* ── Convergence chart ───────────────────────────────────── */
+#convergence-card .chart-body {
+  padding: 8px 10px;
+}
+#convergence-svg {
+  display: block;
+}
+.conv-line {
+  fill: none;
+  stroke: var(--cyan);
+  stroke-width: 1.5;
+}
+.conv-axis {
+  stroke: var(--border2);
+  stroke-width: 1;
+}
+.conv-label {
+  fill: var(--txt3);
+  font-size: 9px;
+  font-family: 'JetBrains Mono', monospace;
 }
 
 /* ── Responsive tweaks ───────────────────────────────────── */

@@ -55,9 +55,10 @@ class FourBarEnv:
     OBS_DIM     = 15   # 6 params + 6 step one-hot + 3 feasibility signals
     ACT_DIM     = 1    # scalar action in [-1, 1]
 
-    def __init__(self, bounds, target_line=None):
+    def __init__(self, bounds, target_line=None, target_pts=None):
         self.bounds      = list(bounds)
         self.target_line = target_line
+        self.target_pts  = target_pts
 
         self.lows   = np.array([b[0] for b in bounds], dtype=np.float32)
         self.highs  = np.array([b[1] for b in bounds], dtype=np.float32)
@@ -162,6 +163,16 @@ class FourBarEnv:
 
         elif step_completed == 5:
             # Full design is now complete — evaluate actual path quality.
+            if self.target_pts is not None and self.target_line is None:
+                from target_trajectory import trajectory_reward
+                from path_kinematics import coupler_path, is_crank_rocker_with_L2_crank
+                L1, L2, L3, L4 = self.params[:4]
+                if not is_crank_rocker_with_L2_crank(L1, L2, L3, L4):
+                    return -1e6
+                pts, valid_frac, all_valid = coupler_path(self.params)
+                if not all_valid or valid_frac < 0.99:
+                    return -1e6
+                return trajectory_reward(pts, self.target_pts)
             r = batch_path_reward(
                 self.params[np.newaxis, :],
                 target_line=self.target_line

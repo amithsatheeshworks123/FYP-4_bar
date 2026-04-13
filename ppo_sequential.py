@@ -46,6 +46,7 @@ Matches ppo_train() so app.py can call both interchangeably.
 """
 
 import math
+import os
 import time
 import numpy as np
 import torch
@@ -207,17 +208,55 @@ def _compute_gae(rewards, values, gamma=0.99, lam=0.95):
     return advantages, returns
 
 
+# ── Checkpoint helpers ────────────────────────────────────────────────────────
+
+def _load_seq_checkpoint(checkpoint_path, obs_dim, act_dim, device):
+    """Load policy, value weights and best result from disk.  Returns fresh
+    networks (with checkpoint weights applied) plus (best_params, best_r)."""
+    policy = SequentialPolicy(obs_dim=obs_dim, act_dim=act_dim).to(device)
+    value  = SequentialValue(obs_dim=obs_dim).to(device)
+    best_params = None
+    best_r      = -1e9
+    if checkpoint_path and os.path.exists(checkpoint_path):
+        ckpt = torch.load(checkpoint_path, map_location=device, weights_only=False)
+        try:
+            policy.load_state_dict(ckpt.get("policy", {}), strict=False)
+        except Exception:
+            pass
+        try:
+            value.load_state_dict(ckpt.get("value", {}), strict=False)
+        except Exception:
+            pass
+        best_params = ckpt.get("best_params", None)
+        best_r      = float(ckpt.get("best_r", -1e9))
+        print("[PPO-Seq] Resuming from checkpoint")
+    return policy, value, best_params, best_r
+
+
+def _save_seq_checkpoint(checkpoint_path, policy, value, best_params, best_r):
+    if not checkpoint_path:
+        return
+    os.makedirs(os.path.dirname(os.path.abspath(checkpoint_path)), exist_ok=True)
+    torch.save({
+        "policy":      policy.state_dict(),
+        "value":       value.state_dict(),
+        "best_params": best_params,
+        "best_r":      best_r,
+    }, checkpoint_path)
+
+
 # ── Main training function ────────────────────────────────────────────────────
 
 def ppo_sequential_train(
     bounds,
-    steps       = 500,
-    batch_size  = 256,
-    lr          = 3e-4,
-    seed        = None,
-    target_line = None,
-    target_pts  = None,
-    log_samples = False,
+    steps           = 500,
+    batch_size      = 256,
+    lr              = 3e-4,
+    seed            = None,
+    target_line     = None,
+    target_pts      = None,
+    log_samples     = False,
+    checkpoint_path = None,
 ):
     """
     Train a sequential PPO agent on FourBarEnv.
@@ -243,9 +282,11 @@ def ppo_sequential_train(
         torch.manual_seed(seed)
         np.random.seed(seed)
 
-    env    = FourBarEnv(bounds, target_line=target_line, target_pts=target_pts)
-    policy = SequentialPolicy(obs_dim=env.obs_dim, act_dim=env.act_dim).to(device)
-    value  = SequentialValue(obs_dim=env.obs_dim).to(device)
+    env = FourBarEnv(bounds, target_line=target_line, target_pts=target_pts)
+
+    policy, value, best_params, best_r = _load_seq_checkpoint(
+        checkpoint_path, env.obs_dim, env.act_dim, device
+    )
 
     _ensure_torch_sympy_compat()
 
@@ -258,9 +299,6 @@ def ppo_sequential_train(
     clip_eps = 0.2
     n_epochs = 4
     mb_size  = 64
-
-    best_r      = -1e9
-    best_params = None
     hist        = []
     samples_log = [] if log_samples else None
 
@@ -405,4 +443,5 @@ def ppo_sequential_train(
         best_params = 0.5 * (lows + highs)
         best_r      = -1e6
 
+    _save_seq_checkpoint(checkpoint_path, policy, value, best_params, best_r)
     return best_r, best_params, hist, samples_log

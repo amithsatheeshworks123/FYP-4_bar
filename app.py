@@ -348,7 +348,7 @@ def run_ppo():
                 ppo_baseline = project(cma_p)
                 mode_label   = "PPO + CMA-ES warm-start"
             else:
-                ppo_baseline = params
+                ppo_baseline = None  # let ppo_train resume from checkpoint if one exists
                 mode_label   = "PPO cold-start"
 
             def scalar_obj(x):
@@ -390,9 +390,9 @@ def run_ppo():
                 mode_label   = "PPO + CMA-ES warm-start"
                 print(f"[PPO warm-start] CMA-ES best reward: {cma_r:.4f}")
             else:
-                ppo_baseline = params
+                ppo_baseline = None  # let ppo_train resume from checkpoint if one exists
                 mode_label   = "PPO cold-start"
-                print("[PPO cold-start] Using default params as baseline (fair comparison)")
+                print("[PPO cold-start] Resuming from checkpoint if available")
 
             def scalar_obj(x):
                 return float(batch_path_reward(
@@ -455,7 +455,7 @@ def run_ppo_extended():
                 ppo_baseline = project(cma_p)
                 mode_label   = "PPO-Extended + CMA-ES warm-start"
             else:
-                ppo_baseline = params
+                ppo_baseline = None  # let ppo_train resume from checkpoint if one exists
                 mode_label   = "PPO-Extended cold-start"
 
             def scalar_obj(x):
@@ -497,9 +497,9 @@ def run_ppo_extended():
                 mode_label   = "PPO-Extended + CMA-ES warm-start"
                 print(f"[PPO-Extended warm-start] CMA-ES best reward: {cma_r:.4f}")
             else:
-                ppo_baseline = params
+                ppo_baseline = None  # let ppo_train resume from checkpoint if one exists
                 mode_label   = "PPO-Extended cold-start"
-                print("[PPO-Extended cold-start] Using default params as baseline (fair comparison)")
+                print("[PPO-Extended cold-start] Resuming from checkpoint if available")
 
             def scalar_obj(x):
                 return float(batch_path_reward(

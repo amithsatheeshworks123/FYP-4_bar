@@ -324,12 +324,17 @@ def ppo_train(
         torch.manual_seed(seed)
         np.random.seed(seed)
 
+    caller_provided_baseline = baseline is not None
+
     if baseline is None:
         baseline = _default_baseline(bounds)
 
-    # Fix E: delete stale checkpoint when a fresh baseline is provided so we
-    # don't inherit a poisoned policy from a previous failed run
-    if checkpoint_path and os.path.exists(checkpoint_path) and baseline is not None:
+    # Fix E: delete stale checkpoint only when the caller explicitly provided a
+    # baseline (warm-start), so we don't inherit a poisoned policy from a
+    # previous failed run. Without this guard the default fallback above makes
+    # baseline always non-None, causing the checkpoint to be deleted on every
+    # run and making resume-across-runs impossible.
+    if checkpoint_path and os.path.exists(checkpoint_path) and caller_provided_baseline:
         print("[PPO] Removing stale checkpoint — starting fresh from baseline")
         os.remove(checkpoint_path)
 

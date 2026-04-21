@@ -31,6 +31,7 @@ app = Flask(__name__)
 BOUNDS          = [(0.05, 0.4)] * 4 + [(-0.1, 0.2), (-0.1, 0.2)]
 DEFAULT_PARAMS  = [0.1, 0.07, 0.12, 0.09, 0.0, 0.0]
 PPO_CKPT        = os.path.join(os.path.dirname(__file__), "ppo_checkpoint.pt")
+PPO_SEQ_CKPT    = os.path.join(os.path.dirname(__file__), "ppo_seq_checkpoint.pt")
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -348,7 +349,7 @@ def run_ppo():
                 ppo_baseline = project(cma_p)
                 mode_label   = "PPO + CMA-ES warm-start"
             else:
-                ppo_baseline = params
+                ppo_baseline = None  # let ppo_train resume from checkpoint if one exists
                 mode_label   = "PPO cold-start"
 
             def scalar_obj(x):
@@ -390,9 +391,9 @@ def run_ppo():
                 mode_label   = "PPO + CMA-ES warm-start"
                 print(f"[PPO warm-start] CMA-ES best reward: {cma_r:.4f}")
             else:
-                ppo_baseline = params
+                ppo_baseline = None  # let ppo_train resume from checkpoint if one exists
                 mode_label   = "PPO cold-start"
-                print("[PPO cold-start] Using default params as baseline (fair comparison)")
+                print("[PPO cold-start] Resuming from checkpoint if available")
 
             def scalar_obj(x):
                 return float(batch_path_reward(
@@ -455,7 +456,7 @@ def run_ppo_extended():
                 ppo_baseline = project(cma_p)
                 mode_label   = "PPO-Extended + CMA-ES warm-start"
             else:
-                ppo_baseline = params
+                ppo_baseline = None  # let ppo_train resume from checkpoint if one exists
                 mode_label   = "PPO-Extended cold-start"
 
             def scalar_obj(x):
@@ -497,9 +498,9 @@ def run_ppo_extended():
                 mode_label   = "PPO-Extended + CMA-ES warm-start"
                 print(f"[PPO-Extended warm-start] CMA-ES best reward: {cma_r:.4f}")
             else:
-                ppo_baseline = params
+                ppo_baseline = None  # let ppo_train resume from checkpoint if one exists
                 mode_label   = "PPO-Extended cold-start"
-                print("[PPO-Extended cold-start] Using default params as baseline (fair comparison)")
+                print("[PPO-Extended cold-start] Resuming from checkpoint if available")
 
             def scalar_obj(x):
                 return float(batch_path_reward(
@@ -552,12 +553,13 @@ def run_ppo_sequential():
         if target_pts is not None:
             best_r, best_p, hist, _ = ppo_sequential_train(
                 BOUNDS,
-                steps       = steps,
-                batch_size  = 256,
-                lr          = 3e-4,
-                seed        = seed_val,
-                target_pts  = target_pts,
-                log_samples = False,
+                steps           = steps,
+                batch_size      = 256,
+                lr              = 3e-4,
+                seed            = seed_val,
+                target_pts      = target_pts,
+                log_samples     = False,
+                checkpoint_path = PPO_SEQ_CKPT,
             )
             best_p = project(best_p)
             from path_kinematics import coupler_path, is_crank_rocker_with_L2_crank
@@ -578,12 +580,13 @@ def run_ppo_sequential():
             tl = _target_line(traj_params.get("c", data.get("target_c", 0.0)))
             best_r, best_p, hist, _ = ppo_sequential_train(
                 BOUNDS,
-                steps       = steps,
-                batch_size  = 256,
-                lr          = 3e-4,
-                seed        = seed_val,
-                target_line = tl,
-                log_samples = False,
+                steps           = steps,
+                batch_size      = 256,
+                lr              = 3e-4,
+                seed            = seed_val,
+                target_line     = tl,
+                log_samples     = False,
+                checkpoint_path = PPO_SEQ_CKPT,
             )
             best_p = project(best_p)
             best_r, _, _, mse, max_dev = path_reward(best_p, target_line=tl,
